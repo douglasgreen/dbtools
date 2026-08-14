@@ -312,6 +312,12 @@ statement that writes to it.
 If `--database` names a database the source user cannot see, the run stops
 before connecting to the target and exits `1`.
 
+**Source and target must be different servers.** Every database is copied to the
+same name on the target, so pointing both connections at one host means dbsync
+overwrites the data it is reading — and with `--drop`, destroys it before the
+first row is read. Distinct connection names are not sufficient protection, so
+the check compares resolved host and port and refuses with exit `1`.
+
 Exit codes: `0` success, `1` configuration or argument error, `2` connection
 failure, `3` completed with warnings such as skipped or unsubnettable tables,
 `4` fatal error during copy.
@@ -325,11 +331,15 @@ ambiguous inference producing a warning rather than an edge; declared
 constraints overriding inference; self-reference forcing `FULL`; topological
 ordering; and cycle detection.
 
-`TableCopier` and `Pruner` get integration tests against a real MySQL server,
-gated on a `DBSYNC_TEST_DSN` environment variable and skipped when it is absent.
-These cover the three-level orphan case from the pushdown discussion above,
-which is the scenario the whole design exists to handle, plus binary and `NULL`
-value fidelity and the placeholder-limit batch split.
+`SchemaInspector`, `TableCopier`, and `Pruner` get integration tests against a
+real MySQL server, gated on a `DBSYNC_TEST_DSN` environment variable and skipped
+when it is absent. These cover the three-level orphan case from the pushdown
+discussion above, which is the scenario the whole design exists to handle, plus
+binary and `NULL` value fidelity and the placeholder-limit batch split.
+
+The end-to-end test additionally needs `DBSYNC_TEST_TARGET_DSN` naming a
+*second* server, and skips without it. It cannot share one server with the
+source, for exactly the reason the same-server guard above exists.
 
 ## MySQL 5.5 compatibility
 
