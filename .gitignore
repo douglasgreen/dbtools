@@ -1,0 +1,13 @@
+# Local configuration — never commit real credentials
+config.ini
+
+# Composer
+/vendor/
+composer.lock
+
+# PHPUnit
+.phpunit.result.cache
+/build/
+
+# Generated specs and plans
+/docs/superpowers/
