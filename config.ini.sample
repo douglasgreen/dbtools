@@ -1,0 +1,35 @@
+; Copy this file to config.ini and fill in real values.
+; config.ini is gitignored — never commit real credentials.
+
+[sync]
+; Tables larger than this are reduced by subnetting. Smaller ones copy whole.
+threshold_mb = 10
+
+; Which residue class to keep: rows where (pk % N) = subnet_remainder.
+subnet_remainder = 0
+
+; Maximum rows per INSERT statement. Lowered automatically when a table has
+; many columns or when rows are large.
+batch_size = 1000
+
+; Databases never copied, in addition to the always-excluded system schemas.
+exclude_databases = "mysql,information_schema,performance_schema,sys"
+
+; Tables copied whole regardless of size, as "database.table", comma separated.
+; Use this for hierarchy tables whose self-reference is not a declared foreign
+; key, since those cannot be detected automatically.
+force_full_tables = ""
+
+; Each remaining section is a named connection usable as --source or --target.
+; port defaults to 3306 when omitted.
+
+[prod]
+host = db1.example.invalid
+user = readonly_user
+password = "REPLACE_ME"
+port = 3306
+
+[dev]
+host = 127.0.0.1
+user = dev_user
+password = "REPLACE_ME"
