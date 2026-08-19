@@ -66,10 +66,37 @@ bin/dbsync.php --source=prod --target=dev --dry-run
 | `--config=PATH` | Config file path. Default `./config.ini`. |
 | `--dry-run` | Print the plan and exit without writing anything. |
 | `--threshold=MB` | Override the size threshold. |
+| `--verbose` | Trace every table, batch, and byte budget to STDERR. |
 | `--help` | Usage. |
 
 Exit codes: `0` success, `1` configuration or argument error, `2` connection
 failure, `3` completed with warnings, `4` fatal error during copy.
+
+### max_allowed_packet on the target
+
+A row travels to the target inside a single MySQL packet. When a statement
+exceeds the target's `max_allowed_packet`, the server does not reject it — it
+closes the connection, and every statement afterwards fails with the misleading
+`SQLSTATE[HY000]: General error: 2006 MySQL server has gone away`. Targets
+running older defaults (1 MB) hit this on any table holding a `BLOB` or `TEXT`
+value bigger than that, even when the source allows 256 MB.
+
+dbsync sizes each `INSERT` to stay under the target's limit, and skips a row it
+cannot send at all rather than killing the connection. Each skipped row is
+reported by table, primary key, size, and the `max_allowed_packet` value needed
+to copy it:
+
+```
+Skipped one row of MARC.Outlines (lesID=71): estimated 2890589 bytes exceeds the
+largest row the target "sbx_mirror" can accept (983040 bytes, from
+max_allowed_packet=1048576).
+```
+
+To copy those rows, raise `max_allowed_packet` on the *target* server to above
+the largest row and rerun. The run also warns up front whenever the target's
+limit is below the source's. If the link does drop anyway, dbsync aborts
+immediately with the table, batch size, byte estimate, SQLSTATE, and MySQL error
+number, instead of letting every remaining table report the same 2006.
 
 ### Source and target must be different servers
 

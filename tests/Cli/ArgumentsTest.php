@@ -78,9 +78,21 @@ final class ArgumentsTest extends TestCase
     public function testUnknownOptionIsRejected(): void
     {
         $this->expectException(ConfigException::class);
-        $this->expectExceptionMessage('--verbose');
+        $this->expectExceptionMessage('--nonsense');
 
-        Arguments::parse(['dbsync.php', '--source=prod', '--target=dev', '--verbose']);
+        Arguments::parse(['dbsync.php', '--source=prod', '--target=dev', '--nonsense']);
+    }
+
+    public function testVerboseFlagIsRecognized(): void
+    {
+        $arguments = Arguments::parse(['dbsync.php', '--source=prod', '--target=dev', '--verbose']);
+
+        self::assertTrue($arguments->verbose);
+    }
+
+    public function testVerboseDefaultsOff(): void
+    {
+        self::assertFalse(Arguments::parse(['dbsync.php', '--source=prod', '--target=dev'])->verbose);
     }
 
     public function testThresholdMustBePositive(): void

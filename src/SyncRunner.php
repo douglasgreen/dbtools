@@ -12,7 +12,9 @@ use DouglasGreen\DbTools\Db\Pruner;
 use DouglasGreen\DbTools\Db\SchemaInspector;
 use DouglasGreen\DbTools\Db\TableCopier;
 use DouglasGreen\DbTools\Exception\ConfigException;
+use DouglasGreen\DbTools\Exception\CopyException;
 use DouglasGreen\DbTools\Plan\SyncPlanner;
+use DouglasGreen\DbTools\Report\DebugLog;
 use DouglasGreen\DbTools\Report\Report;
 use DouglasGreen\DbTools\Schema\RelationshipGraph;
 use PDOException;
@@ -22,6 +24,8 @@ final class SyncRunner
     /** @var resource */
     private $out;
 
+    private readonly DebugLog $debug;
+
     /**
      * @param resource|null $out defaults to STDOUT
      */
@@ -30,8 +34,10 @@ final class SyncRunner
         private readonly Arguments $arguments,
         private readonly Report $report,
         $out = null,
+        ?DebugLog $debug = null,
     ) {
         $this->out = $out ?? STDOUT;
+        $this->debug = $debug ?? new DebugLog($arguments->verbose);
     }
 
     public function run(): int
@@ -68,10 +74,43 @@ final class SyncRunner
 
         $databases = $this->resolveDatabases($inspector, $options->excludeDatabases);
 
+        $this->debug->log(sprintf(
+            'source "%s" %s:%d server=%s max_allowed_packet=%d',
+            $sourceConfig->name,
+            $sourceConfig->host,
+            $sourceConfig->port,
+            $source->serverVersion(),
+            $source->maxAllowedPacket(),
+        ));
+
         $target = null;
         if (! $this->arguments->dryRun) {
             $target = Connection::open($targetConfig);
             $target->applySessionDefaults(true);
+
+            $this->debug->log(sprintf(
+                'target "%s" %s:%d server=%s max_allowed_packet=%d',
+                $targetConfig->name,
+                $targetConfig->host,
+                $targetConfig->port,
+                $target->serverVersion(),
+                $target->maxAllowedPacket(),
+            ));
+
+            // A row that fits comfortably on the source can be too large for
+            // the target's packet limit, and MySQL answers an oversized packet
+            // by closing the connection rather than by rejecting the statement.
+            if ($target->maxAllowedPacket() < $source->maxAllowedPacket()) {
+                $this->report->addWarning(sprintf(
+                    'Target "%s" allows a smaller max_allowed_packet than source "%s" '
+                        . '(%s vs %s). Rows larger than the target limit cannot be sent and '
+                        . 'are skipped with a warning naming the table and primary key.',
+                    $targetConfig->name,
+                    $sourceConfig->name,
+                    SyncPlanner::humanBytes($target->maxAllowedPacket()),
+                    SyncPlanner::humanBytes($source->maxAllowedPacket()),
+                ));
+            }
         }
 
         $sourceBytes = 0;
@@ -105,7 +144,7 @@ final class SyncRunner
             $this->createTargetDatabase($inspector, $target, $database);
 
             $this->report->startPhase('Copy');
-            $copier = new TableCopier($source, $target, $options->batchSize);
+            $copier = new TableCopier($source, $target, $options->batchSize, $this->debug);
 
             foreach ($graph->topologicalOrder() as $name) {
                 $table = $schema->table($name);
@@ -117,7 +156,27 @@ final class SyncRunner
                 try {
                     $copier->recreate($database, $name, $inspector->createTableStatement($database, $name));
                     $this->report->addCopy($database, $copier->copy($table, $plan));
-                } catch (PDOException $e) {
+                } catch (CopyException | PDOException $e) {
+                    $previous = $e->getPrevious();
+                    $driverError = $e instanceof PDOException
+                        ? $e
+                        : ($previous instanceof PDOException ? $previous : null);
+
+                    // A closed link cannot be recovered on this handle. Without
+                    // stopping here, every remaining table and the whole prune
+                    // pass fail with "MySQL server has gone away", burying the
+                    // one error that explains the run.
+                    if ($driverError !== null && Connection::isConnectionLost($driverError)) {
+                        throw new CopyException(sprintf(
+                            'Copy of %s.%s lost the connection to target "%s"; aborting before the '
+                                . 'remaining tables report the same failure. %s',
+                            $database,
+                            $name,
+                            $targetConfig->name,
+                            $e->getMessage(),
+                        ), 0, $e);
+                    }
+
                     // TableCopier::copy() streams rows in batches, so this
                     // exception can arrive after some batches already
                     // committed. The table is not untouched — it may hold a
@@ -131,6 +190,7 @@ final class SyncRunner
                 }
             }
 
+            $this->report->addWarnings($copier->warnings());
             $this->report->endPhase('Copy');
 
             $this->report->startPhase('Prune');

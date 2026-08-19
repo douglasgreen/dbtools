@@ -15,7 +15,7 @@ final class Report
      * @var array<string, array{
      *     database: string, table: string, class: string, modulus: int|null,
      *     sourceBytes: int, estimatedRows: int, rowsRead: int, rowsInserted: int,
-     *     rowsPruned: int, bytes: int, seconds: float
+     *     rowsPruned: int, rowsSkipped: int, bytes: int, seconds: float
      * }>
      */
     private array $rows = [];
@@ -62,6 +62,7 @@ final class Report
             'rowsRead' => 0,
             'rowsInserted' => 0,
             'rowsPruned' => 0,
+            'rowsSkipped' => 0,
             'bytes' => 0,
             'seconds' => 0.0,
         ];
@@ -81,6 +82,7 @@ final class Report
 
         $this->rows[$key]['rowsRead'] = $result->rowsRead;
         $this->rows[$key]['rowsInserted'] = $result->rowsInserted;
+        $this->rows[$key]['rowsSkipped'] = $result->rowsSkipped;
         $this->rows[$key]['bytes'] = $result->bytesTransferred;
         $this->rows[$key]['seconds'] = $result->seconds;
     }
@@ -163,31 +165,35 @@ final class Report
     {
         $lines = ['', 'COPY COMPLETE', ''];
         $lines[] = sprintf(
-            '%-24s %-32s %-15s %12s %10s %12s %10s',
+            '%-24s %-32s %-15s %12s %10s %10s %12s %10s',
             'DATABASE',
             'TABLE',
             'CLASS',
             'ROWS COPIED',
             'PRUNED',
+            'SKIPPED',
             'BYTES',
             'TIME',
         );
-        $lines[] = str_repeat('-', 120);
+        $lines[] = str_repeat('-', 131);
 
         $totalRows = 0;
         $totalPruned = 0;
+        $totalSkipped = 0;
 
         foreach ($this->rows as $row) {
             $totalRows += $row['rowsInserted'];
             $totalPruned += $row['rowsPruned'];
+            $totalSkipped += $row['rowsSkipped'];
 
             $lines[] = sprintf(
-                '%-24s %-32s %-15s %12s %10s %12s %10s',
+                '%-24s %-32s %-15s %12s %10s %10s %12s %10s',
                 $row['database'],
                 $row['table'],
                 $row['class'],
                 number_format($row['rowsInserted']),
                 number_format($row['rowsPruned']),
+                number_format($row['rowsSkipped']),
                 SyncPlanner::humanBytes($row['bytes']),
                 self::formatDuration($row['seconds']),
             );
@@ -199,6 +205,7 @@ final class Report
         $lines[] = sprintf('Tables:        %s', number_format(count($this->rows)));
         $lines[] = sprintf('Rows copied:   %s', number_format($totalRows));
         $lines[] = sprintf('Rows pruned:   %s', number_format($totalPruned));
+        $lines[] = sprintf('Rows skipped:  %s', number_format($totalSkipped));
         $lines[] = sprintf('Source size:   %s', SyncPlanner::humanBytes($sourceBytes));
         $lines[] = sprintf('Target size:   %s', SyncPlanner::humanBytes($targetBytes));
         $lines[] = sprintf('Target/source: %.1f%%', $ratio);

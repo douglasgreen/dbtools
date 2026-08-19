@@ -12,6 +12,7 @@ final readonly class CopyResult
         public int $rowsInserted,
         public int $bytesTransferred,
         public float $seconds,
+        public int $rowsSkipped = 0,
     ) {
     }
 }

@@ -84,6 +84,76 @@ final class TableCopierIntegrationTest extends IntegrationTestCase
         self::assertNull($row[0]['label']);
     }
 
+    /**
+     * An oversized row must be skipped rather than sent. MySQL answers a packet
+     * larger than max_allowed_packet by closing the connection, after which
+     * every later statement — including the prune pass — reports the misleading
+     * "MySQL server has gone away".
+     */
+    public function testRowLargerThanTheTargetPacketIsSkippedAndTheConnectionSurvives(): void
+    {
+        $source = $this->connect();
+        $packet = $source->maxAllowedPacket();
+
+        if ($packet > 16 * 1024 * 1024) {
+            self::markTestSkipped(sprintf(
+                'max_allowed_packet is %d bytes; building an oversized row would need that much memory.',
+                $packet,
+            ));
+        }
+
+        $this->recreateDatabase($source, self::SOURCE);
+        $this->recreateDatabase($source, self::TARGET);
+        $source->useDatabase(self::SOURCE);
+        $source->exec(
+            'CREATE TABLE `blobs` ('
+                . '`id` INT NOT NULL,'
+                . '`payload` LONGBLOB NULL,'
+                . 'PRIMARY KEY (`id`)) ENGINE=InnoDB',
+        );
+
+        $oversized = str_repeat('x', TableCopier::usableRowBytes($packet) + 1024);
+        $insert = $source->pdo()->prepare('INSERT INTO `blobs` VALUES (?, ?)');
+        $insert->execute([1, 'small']);
+        // Written with a packet this size available on the source, which is the
+        // situation dbsync hits: a row legal here, too large for the target.
+        $insert->execute([2, $oversized]);
+        $insert->execute([3, 'also small']);
+
+        $inspector = new SchemaInspector($source);
+        $schema = $inspector->inspect(self::SOURCE);
+        $blobs = $schema->table('blobs');
+        self::assertNotNull($blobs);
+
+        $target = $this->connect();
+        $copier = new TableCopier($source, $target, 1000);
+        $copier->recreate(self::TARGET, 'blobs', $inspector->createTableStatement(self::SOURCE, 'blobs'));
+
+        $result = $copier->copy(
+            $blobs,
+            new TablePlan('blobs', TablePlan::FULL, null, 0, '', true, true, 'test'),
+        );
+
+        self::assertSame(3, $result->rowsRead);
+        self::assertSame(2, $result->rowsInserted);
+        self::assertSame(1, $result->rowsSkipped);
+
+        $warnings = $copier->warnings();
+        self::assertCount(1, $warnings);
+        self::assertStringContainsString('id=2', $warnings[0]);
+        self::assertStringContainsString('max_allowed_packet', $warnings[0]);
+
+        // The whole point: the link is still usable for later tables and prunes.
+        self::assertTrue($target->isAlive());
+
+        $target->useDatabase(self::TARGET);
+        $ids = array_map(
+            static fn (array $r): int => (int) $r['id'],
+            $target->fetchAll('SELECT `id` FROM `blobs` ORDER BY `id`'),
+        );
+        self::assertSame([1, 3], $ids);
+    }
+
     public function testStructureOnlyPlanCopiesNoRows(): void
     {
         $source = $this->connect();

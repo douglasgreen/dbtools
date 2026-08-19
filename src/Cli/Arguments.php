@@ -10,7 +10,7 @@ final readonly class Arguments
 {
     private const VALUE_OPTIONS = ['source', 'target', 'database', 'config', 'threshold'];
 
-    private const FLAG_OPTIONS = ['drop', 'dry-run', 'help'];
+    private const FLAG_OPTIONS = ['drop', 'dry-run', 'help', 'verbose'];
 
     public function __construct(
         public string $source,
@@ -21,6 +21,7 @@ final readonly class Arguments
         public bool $dryRun,
         public ?int $thresholdMb,
         public bool $helpRequested,
+        public bool $verbose = false,
     ) {
     }
 
@@ -100,6 +101,7 @@ final readonly class Arguments
             isset($flags['dry-run']),
             $threshold,
             $help,
+            isset($flags['verbose']),
         );
     }
 
@@ -122,6 +124,7 @@ final readonly class Arguments
               --config=PATH     Config file path. Default: config.ini
               --dry-run         Print the plan and exit without writing anything.
               --threshold=MB    Size above which a table is subnetted. Default: 10
+              --verbose         Trace every table, batch, and byte budget to STDERR.
               --help, -h        Show this message.
 
             Exit codes:
