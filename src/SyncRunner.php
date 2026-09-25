@@ -146,6 +146,9 @@ final class SyncRunner
             $this->report->startPhase('Copy');
             $copier = new TableCopier($source, $target, $options->batchSize, $this->debug);
 
+            /** @var array<string, true> $uncreated tables absent from the target after a failed recreate */
+            $uncreated = [];
+
             foreach ($graph->topologicalOrder() as $name) {
                 $table = $schema->table($name);
                 $plan = $plans[$name] ?? null;
@@ -153,8 +156,41 @@ final class SyncRunner
                     continue;
                 }
 
+                // A table that could not be created does not exist on the
+                // target, so copying into it or pruning against it can only
+                // fail again — and a prune failure would be fatal, hiding this
+                // error from the summary.
                 try {
                     $copier->recreate($database, $name, $inspector->createTableStatement($database, $name));
+                } catch (PDOException $e) {
+                    if (Connection::isConnectionLost($e)) {
+                        throw new CopyException(sprintf(
+                            'Recreating %s.%s lost a database connection; aborting. %s',
+                            $database,
+                            $name,
+                            $e->getMessage(),
+                        ), 0, $e);
+                    }
+
+                    $uncreated[$name] = true;
+                    $this->debug->log(sprintf(
+                        'recreate %s.%s FAILED: %s',
+                        $database,
+                        $name,
+                        Connection::describeError($e),
+                    ));
+                    $this->report->addWarning(sprintf(
+                        'Table %s.%s could not be created on the target, so it was not copied '
+                            . 'and rows referencing it were not pruned: %s',
+                        $database,
+                        $name,
+                        $e->getMessage(),
+                    ));
+
+                    continue;
+                }
+
+                try {
                     $this->report->addCopy($database, $copier->copy($table, $plan));
                 } catch (CopyException | PDOException $e) {
                     $previous = $e->getPrevious();
@@ -181,6 +217,7 @@ final class SyncRunner
                     // exception can arrive after some batches already
                     // committed. The table is not untouched — it may hold a
                     // fraction of its rows on the target.
+                    $this->debug->log(sprintf('copy %s.%s FAILED: %s', $database, $name, $e->getMessage()));
                     $this->report->addWarning(sprintf(
                         'Table %s.%s failed mid-copy and may be left partially populated on the target: %s',
                         $database,
@@ -195,7 +232,10 @@ final class SyncRunner
 
             $this->report->startPhase('Prune');
             $pruner = new Pruner($target);
-            foreach ($pruner->prune($database, $graph->edges(), $plans, $graph->topologicalOrder()) as $result) {
+            // Dropping the plan makes prunableEdges() skip every edge that
+            // touches the table, in either direction.
+            $prunePlans = array_diff_key($plans, $uncreated);
+            foreach ($pruner->prune($database, $graph->edges(), $prunePlans, $graph->topologicalOrder()) as $result) {
                 $this->report->addPrune($database, $result);
             }
 

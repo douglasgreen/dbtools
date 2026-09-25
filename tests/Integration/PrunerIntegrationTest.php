@@ -97,6 +97,44 @@ final class PrunerIntegrationTest extends IntegrationTestCase
         self::assertSame([10, 20], $ids);
     }
 
+    public function testMissingTableWarnsAndOtherEdgesStillPrune(): void
+    {
+        $target = $this->connect();
+        $this->recreateDatabase($target, self::DB);
+        $target->useDatabase(self::DB);
+
+        // `invoices` is planned but absent, as when its CREATE TABLE failed.
+        $target->exec('CREATE TABLE `customers` (`customer_id` INT UNSIGNED NOT NULL, PRIMARY KEY (`customer_id`)) ENGINE=InnoDB');
+        $target->exec('CREATE TABLE `orders` (`order_id` INT UNSIGNED NOT NULL, `customer_id` INT UNSIGNED NOT NULL, PRIMARY KEY (`order_id`)) ENGINE=InnoDB');
+        $target->exec('INSERT INTO `customers` VALUES (1)');
+        $target->exec('INSERT INTO `orders` VALUES (10, 1), (20, 2)');
+
+        $edges = [
+            new ForeignKey('invoices', 'customer_id', 'customers', 'customer_id', false),
+            new ForeignKey('orders', 'customer_id', 'customers', 'customer_id', false),
+        ];
+        $plans = [
+            'customers' => new TablePlan('customers', TablePlan::SUBNET, 3, 0, '', true, false, 't'),
+            'invoices' => new TablePlan('invoices', TablePlan::FULL, null, 0, '', false, false, 't'),
+            'orders' => new TablePlan('orders', TablePlan::FULL, null, 0, '', false, false, 't'),
+        ];
+
+        $pruner = new Pruner($target);
+        $pruner->prune(self::DB, $edges, $plans, ['customers', 'invoices', 'orders']);
+
+        $ids = array_map(
+            static fn (array $r): int => (int) $r['order_id'],
+            $target->fetchAll('SELECT `order_id` FROM `orders`'),
+        );
+        self::assertSame([10], $ids);
+
+        $matched = array_filter(
+            $pruner->warnings(),
+            static fn (string $w): bool => str_contains($w, 'invoices.customer_id'),
+        );
+        self::assertCount(1, $matched);
+    }
+
     public function testStructureOnlyParentWarnsAndDeletesChildren(): void
     {
         $target = $this->connect();

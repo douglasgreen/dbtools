@@ -52,6 +52,21 @@ final class PrunerTest extends TestCase
         self::assertSame([], Pruner::prunableEdges($edges, $plans, ['customers', 'logs']));
     }
 
+    public function testEdgeTouchingUnplannedTableIsNotPruned(): void
+    {
+        // SyncRunner drops the plan of any table it failed to create.
+        $edges = [
+            new ForeignKey('orders', 'customer_id', 'customers', 'customer_id', false),
+            new ForeignKey('order_items', 'order_id', 'orders', 'order_id', false),
+        ];
+        $plans = [
+            'customers' => $this->plan('customers', TablePlan::SUBNET, false),
+            'order_items' => $this->plan('order_items', TablePlan::SUBNET, false),
+        ];
+
+        self::assertSame([], Pruner::prunableEdges($edges, $plans, ['customers', 'orders', 'order_items']));
+    }
+
     public function testEdgesAreOrderedByChildTopologicalPosition(): void
     {
         $edges = [

@@ -7,6 +7,7 @@ namespace DouglasGreen\DbTools\Db;
 use DouglasGreen\DbTools\Plan\TablePlan;
 use DouglasGreen\DbTools\Schema\ForeignKey;
 use DouglasGreen\DbTools\Sql;
+use PDOException;
 
 final class Pruner
 {
@@ -89,8 +90,31 @@ final class Pruner
         for ($sweep = 0; $sweep < $this->maxSweeps; ++$sweep) {
             $deletedThisSweep = 0;
 
-            foreach ($prunable as $edge) {
-                $deleted = $this->deleteOrphans($database, $edge);
+            foreach ($prunable as $index => $edge) {
+                // One broken edge must not abort the pass: an exception here
+                // escapes the run before the summary prints, hiding both this
+                // error and every warning collected during the copy.
+                try {
+                    $deleted = $this->deleteOrphans($database, $edge);
+                } catch (PDOException $e) {
+                    if (Connection::isConnectionLost($e)) {
+                        throw $e;
+                    }
+
+                    $this->warnings[] = sprintf(
+                        'Could not prune %s.%s against %s.%s in %s; orphaned rows may remain: %s',
+                        $edge->childTable,
+                        $edge->childColumn,
+                        $edge->parentTable,
+                        $edge->parentColumn,
+                        $database,
+                        $e->getMessage(),
+                    );
+                    unset($prunable[$index]);
+
+                    continue;
+                }
+
                 $deletedThisSweep += $deleted;
 
                 $key = $edge->childTable . '.' . $edge->childColumn;
